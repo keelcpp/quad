@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(keel)
+
+include("${CMAKE_CURRENT_LIST_DIR}/keel_quadTargets.cmake")
+
+if(TARGET keel::keel_quad AND NOT TARGET keel::quad)
+    add_library(keel::quad ALIAS keel::keel_quad)
+endif()
+
+check_required_components(keel_quad)
