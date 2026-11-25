@@ -1,28 +1,27 @@
+#include <keel/format.h>
+#include <keel/math.h>
 #include <keel/quad.h>
-
-#include <cmath>
-#include <cstdio>
 
 namespace {
 
-int g_failures = 0;
+keel::i32 g_failures = 0;
 
 void check(bool cond, const char* msg) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL: %s\n", msg);
+        keel::eprintln("FAIL: %s", msg);
         ++g_failures;
     }
 }
 
 void check_near(keel::f64 got, keel::f64 expected, keel::f64 tol, const char* msg) {
-    if (std::fabs(got - expected) > tol || std::isnan(got)) {
-        std::fprintf(stderr, "FAIL: %s (got %.15g, expected %.15g, tol %.3g)\n", msg, got, expected, tol);
+    if (keel::abs(got - expected) > tol || keel::is_nan(got)) {
+        keel::eprintln("FAIL: %s (got %.15g, expected %.15g, tol %.3g)", msg, got, expected, tol);
         ++g_failures;
     }
 }
 
 void test_integral_1d() {
-    auto r1 = keel::quad::integral([](keel::f64 x) { return std::sin(x); }, 0.0, keel::kPi);
+    auto r1 = keel::quad::integral([](keel::f64 x) { return keel::sin(x); }, 0.0, keel::kPi);
     check(r1.ok(), "integral sin ok");
     check_near(r1.value, 2.0, 1e-12, "integral sin(0..pi) == 2");
 
@@ -32,7 +31,7 @@ void test_integral_1d() {
     check_near(r2.value, -8.0 / 3.0, 1e-12, "integral x^2 reversed");
 
     // Complex integrand: integral_0^pi exp(i*x) dx = 2i
-    auto rc = keel::quad::integral_c64([](keel::f64 x) { return keel::c64(std::cos(x), std::sin(x)); }, 0.0, keel::kPi);
+    auto rc = keel::quad::integral_c64([](keel::f64 x) { return keel::c64(keel::cos(x), keel::sin(x)); }, 0.0, keel::kPi);
     check(rc.ok(), "integral_c64 ok");
     check_near(rc.value.real(), 0.0, 1e-12, "integral_c64 real");
     check_near(rc.value.imag(), 2.0, 1e-12, "integral_c64 imag");
@@ -54,7 +53,7 @@ void test_integral_2d_and_3d() {
     check_near(r2.value, 4.0 / 3.0, 1e-12, "integral2 x*y^2");
 
     // Batch 2D complex path + fallback path
-    int batch_calls = 0;
+    keel::i32 batch_calls = 0;
     auto batch_fn = [&](keel::ArrayRef<keel::f64> xs, keel::ArrayRef<keel::f64> ys,
                         keel::MutArrayRef<keel::c64> out) -> bool {
         ++batch_calls;
@@ -131,9 +130,9 @@ int main() {
     test_trapz_and_cumtrapz();
     test_gradient_and_del2();
     if (g_failures == 0) {
-        std::printf("ALL keel::quad TESTS PASSED\n");
+        keel::println("ALL keel::quad TESTS PASSED");
         return 0;
     }
-    std::fprintf(stderr, "%d FAILURE(S)\n", g_failures);
+    keel::eprintln("%d FAILURE(S)", g_failures);
     return 1;
 }
