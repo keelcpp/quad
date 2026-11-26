@@ -16,7 +16,8 @@ Zero-STL C++20 numerical quadrature and discrete calculus library built on [`kee
   - `gradient_1d` / `gradient_strided` (central interior, one-sided boundaries)
   - `del2_strided` (discrete Laplacian 1D pass with linear boundary extrapolation)
 - Non-owning `keel::FunctionRef` callbacks — works cleanly with `-fno-exceptions -fno-rtti`
-- Zero STL headers in public headers and implementation
+- Zero STL headers in public headers and implementation; in-place aliasing-safe discrete operators
+- Differential reference test suite (`tests/verify_reference.py`) validated against NumPy, SciPy, and MATLAB
 
 ## Usage
 

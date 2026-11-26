@@ -4,6 +4,10 @@ namespace keel::quad {
 
 namespace {
 
+constexpr i32 kMaxDepth1D = 50;
+constexpr i32 kMaxDepth2D = 32;
+constexpr f64 kRoundoffFloor = 4.0 * 2.2204460492503131e-16;
+
 // ============================================================================
 // 1D Adaptive Gauss-Kronrod G7/K15
 // ============================================================================
@@ -20,7 +24,7 @@ struct Gk15PairC64 {
 
 [[nodiscard]] Gk15PairF64 gk15_f64(Fn1 fn, f64 a, f64 b) {
     const f64 half = 0.5 * (b - a);
-    const f64 mid = 0.5 * (b + a);
+    const f64 mid = a + half;
     f64 k_sum = 0.0;
     f64 g_sum = 0.0;
     for (usize i = 0; i < 15; ++i) {
@@ -37,17 +41,21 @@ struct Gk15PairC64 {
 [[nodiscard]] f64 adaptive_1d_f64(Fn1 fn, f64 a, f64 b, f64 abs_tol, i32 depth, i32 max_depth) {
     const Gk15PairF64 p = gk15_f64(fn, a, b);
     const f64 err = abs(p.k - p.g);
-    if (err < abs_tol || depth >= max_depth) {
+    const f64 eff_tol = max(abs_tol, kRoundoffFloor * abs(p.k));
+    if (!is_finite(err) || !is_finite(p.k) || err <= eff_tol || depth >= max_depth) {
         return p.k;
     }
-    const f64 mid = 0.5 * (a + b);
+    const f64 mid = a + 0.5 * (b - a);
+    if (mid <= a || mid >= b) {
+        return p.k;
+    }
     return adaptive_1d_f64(fn, a, mid, abs_tol * 0.5, depth + 1, max_depth) +
            adaptive_1d_f64(fn, mid, b, abs_tol * 0.5, depth + 1, max_depth);
 }
 
 [[nodiscard]] Gk15PairC64 gk15_c64(Fn1C fn, f64 a, f64 b) {
     const f64 half = 0.5 * (b - a);
-    const f64 mid = 0.5 * (b + a);
+    const f64 mid = a + half;
     c64 k_sum(0.0, 0.0);
     c64 g_sum(0.0, 0.0);
     for (usize i = 0; i < 15; ++i) {
@@ -64,10 +72,14 @@ struct Gk15PairC64 {
 [[nodiscard]] c64 adaptive_1d_c64(Fn1C fn, f64 a, f64 b, f64 abs_tol, i32 depth, i32 max_depth) {
     const Gk15PairC64 p = gk15_c64(fn, a, b);
     const f64 err = abs(p.k - p.g);
-    if (err < abs_tol || depth >= max_depth) {
+    const f64 eff_tol = max(abs_tol, kRoundoffFloor * abs(p.k));
+    if (!is_finite(err) || !is_finite(p.k.real()) || !is_finite(p.k.imag()) || err <= eff_tol || depth >= max_depth) {
         return p.k;
     }
-    const f64 mid = 0.5 * (a + b);
+    const f64 mid = a + 0.5 * (b - a);
+    if (mid <= a || mid >= b) {
+        return p.k;
+    }
     return adaptive_1d_c64(fn, a, mid, abs_tol * 0.5, depth + 1, max_depth) +
            adaptive_1d_c64(fn, mid, b, abs_tol * 0.5, depth + 1, max_depth);
 }
@@ -78,9 +90,9 @@ struct Gk15PairC64 {
 
 [[nodiscard]] f64 adaptive_2d_f64(Fn2 fn, f64 x0, f64 x1, f64 y0, f64 y1, f64 tol, i32 depth, i32 max_depth) {
     const f64 half_x = 0.5 * (x1 - x0);
-    const f64 mid_x = 0.5 * (x1 + x0);
+    const f64 mid_x = x0 + half_x;
     const f64 half_y = 0.5 * (y1 - y0);
-    const f64 mid_y = 0.5 * (y1 + y0);
+    const f64 mid_y = y0 + half_y;
 
     f64 z[15][15];
     for (usize i = 0; i < 15; ++i) {
@@ -121,11 +133,19 @@ struct Gk15PairC64 {
     const f64 err_x = abs(kxy - gxky);
     const f64 err_y = abs(kxy - kxgy);
     const f64 err = max(abs(kxy - gxy), max(err_x, err_y));
-    if (err < tol || depth >= max_depth) {
+    const f64 eff_tol = max(tol, kRoundoffFloor * abs(kxy));
+    if (!is_finite(err) || !is_finite(kxy) || err <= eff_tol || depth >= max_depth) {
         return kxy;
     }
 
-    if (err_x > err_y * 1.25 || (err_y <= err_x * 1.25 && (x1 - x0) >= (y1 - y0))) {
+    const bool can_split_x = (mid_x > x0 && mid_x < x1);
+    const bool can_split_y = (mid_y > y0 && mid_y < y1);
+    if (!can_split_x && !can_split_y) {
+        return kxy;
+    }
+
+    const bool prefer_x = (err_x > err_y * 1.25 || (err_y <= err_x * 1.25 && (x1 - x0) >= (y1 - y0)));
+    if ((prefer_x && can_split_x) || !can_split_y) {
         return adaptive_2d_f64(fn, x0, mid_x, y0, y1, tol * 0.5, depth + 1, max_depth) +
                adaptive_2d_f64(fn, mid_x, x1, y0, y1, tol * 0.5, depth + 1, max_depth);
     }
@@ -134,19 +154,19 @@ struct Gk15PairC64 {
 }
 
 [[nodiscard]] c64 adaptive_2d_c64(BatchFn2C batch_fn, Fn2C scalar_fn, f64 x0, f64 x1, f64 y0, f64 y1, f64 tol,
-                                  i32 depth, i32 max_depth, bool& batch_ok) {
+                                  i32 depth, i32 max_depth, bool& batch_ok, bool& callback_failed) {
     const f64 half_x = 0.5 * (x1 - x0);
-    const f64 mid_x = 0.5 * (x1 + x0);
+    const f64 mid_x = x0 + half_x;
     const f64 half_y = 0.5 * (y1 - y0);
-    const f64 mid_y = 0.5 * (y1 + y0);
+    const f64 mid_y = y0 + half_y;
 
+    // Indexed as z[j][i] (y-major) so batch_fn can write directly without a second 225-element buffer.
     c64 z[15][15];
     bool evaluated = false;
 
     if (batch_ok && !batch_fn.empty()) {
         f64 xs[225];
         f64 ys[225];
-        c64 out[225];
         for (usize j = 0; j < 15; ++j) {
             const f64 yv = mid_y + half_y * kKronrodX[j];
             for (usize i = 0; i < 15; ++i) {
@@ -154,12 +174,7 @@ struct Gk15PairC64 {
                 ys[j * 15 + i] = yv;
             }
         }
-        if (batch_fn(ArrayRef<f64>(xs, 225), ArrayRef<f64>(ys, 225), MutArrayRef<c64>(out, 225))) {
-            for (usize j = 0; j < 15; ++j) {
-                for (usize i = 0; i < 15; ++i) {
-                    z[i][j] = out[j * 15 + i];
-                }
-            }
+        if (batch_fn(ArrayRef<f64>(xs, 225), ArrayRef<f64>(ys, 225), MutArrayRef<c64>(&z[0][0], 225))) {
             evaluated = true;
         } else {
             batch_ok = false;
@@ -167,11 +182,15 @@ struct Gk15PairC64 {
     }
 
     if (!evaluated) {
-        for (usize i = 0; i < 15; ++i) {
-            const f64 xv = mid_x + half_x * kKronrodX[i];
-            for (usize j = 0; j < 15; ++j) {
-                const f64 yv = mid_y + half_y * kKronrodX[j];
-                z[i][j] = scalar_fn(xv, yv);
+        if (scalar_fn.empty()) {
+            callback_failed = true;
+            return c64(0.0, 0.0);
+        }
+        for (usize j = 0; j < 15; ++j) {
+            const f64 yv = mid_y + half_y * kKronrodX[j];
+            for (usize i = 0; i < 15; ++i) {
+                const f64 xv = mid_x + half_x * kKronrodX[i];
+                z[j][i] = scalar_fn(xv, yv);
             }
         }
     }
@@ -184,9 +203,9 @@ struct Gk15PairC64 {
         c64 ky(0.0, 0.0);
         c64 gy(0.0, 0.0);
         for (usize j = 0; j < 15; ++j) {
-            ky += kKronrodW[j] * z[i][j];
+            ky += kKronrodW[j] * z[j][i];
             if ((j & 1u) == 1u) {
-                gy += kGaussW[j / 2] * z[i][j];
+                gy += kGaussW[j / 2] * z[j][i];
             }
         }
         kxy += kKronrodW[i] * ky;
@@ -206,16 +225,32 @@ struct Gk15PairC64 {
     const f64 err_x = abs(kxy - gxky);
     const f64 err_y = abs(kxy - kxgy);
     const f64 err = max(abs(kxy - gxy), max(err_x, err_y));
-    if (err < tol || depth >= max_depth) {
+    const f64 eff_tol = max(tol, kRoundoffFloor * abs(kxy));
+    if (!is_finite(err) || !is_finite(kxy.real()) || !is_finite(kxy.imag()) || err <= eff_tol || depth >= max_depth) {
         return kxy;
     }
 
-    if (err_x > err_y * 1.25 || (err_y <= err_x * 1.25 && (x1 - x0) >= (y1 - y0))) {
-        return adaptive_2d_c64(batch_fn, scalar_fn, x0, mid_x, y0, y1, tol * 0.5, depth + 1, max_depth, batch_ok) +
-               adaptive_2d_c64(batch_fn, scalar_fn, mid_x, x1, y0, y1, tol * 0.5, depth + 1, max_depth, batch_ok);
+    const bool can_split_x = (mid_x > x0 && mid_x < x1);
+    const bool can_split_y = (mid_y > y0 && mid_y < y1);
+    if (!can_split_x && !can_split_y) {
+        return kxy;
     }
-    return adaptive_2d_c64(batch_fn, scalar_fn, x0, x1, y0, mid_y, tol * 0.5, depth + 1, max_depth, batch_ok) +
-           adaptive_2d_c64(batch_fn, scalar_fn, x0, x1, mid_y, y1, tol * 0.5, depth + 1, max_depth, batch_ok);
+
+    const bool prefer_x = (err_x > err_y * 1.25 || (err_y <= err_x * 1.25 && (x1 - x0) >= (y1 - y0)));
+    if ((prefer_x && can_split_x) || !can_split_y) {
+        const c64 left = adaptive_2d_c64(batch_fn, scalar_fn, x0, mid_x, y0, y1, tol * 0.5, depth + 1, max_depth,
+                                         batch_ok, callback_failed);
+        if (callback_failed) return c64(0.0, 0.0);
+        const c64 right = adaptive_2d_c64(batch_fn, scalar_fn, mid_x, x1, y0, y1, tol * 0.5, depth + 1, max_depth,
+                                          batch_ok, callback_failed);
+        return left + right;
+    }
+    const c64 bot = adaptive_2d_c64(batch_fn, scalar_fn, x0, x1, y0, mid_y, tol * 0.5, depth + 1, max_depth, batch_ok,
+                                    callback_failed);
+    if (callback_failed) return c64(0.0, 0.0);
+    const c64 top = adaptive_2d_c64(batch_fn, scalar_fn, x0, x1, mid_y, y1, tol * 0.5, depth + 1, max_depth, batch_ok,
+                                    callback_failed);
+    return bot + top;
 }
 
 } // namespace
@@ -234,7 +269,7 @@ Result<f64> integral(Fn1 fn, f64 a, f64 b, f64 abs_tol, i32 max_depth) {
         sign = -1.0;
     }
     if (a == b) return {Status::Ok, 0.0};
-    const i32 depth_limit = (max_depth >= 0) ? max_depth : 20;
+    const i32 depth_limit = (max_depth >= 0) ? min(max_depth, kMaxDepth1D) : 20;
     return {Status::Ok, sign * adaptive_1d_f64(fn, a, b, abs_tol, 0, depth_limit)};
 }
 
@@ -248,7 +283,7 @@ Result<c64> integral_c64(Fn1C fn, f64 a, f64 b, f64 abs_tol, i32 max_depth) {
         sign = -1.0;
     }
     if (a == b) return {Status::Ok, c64(0.0, 0.0)};
-    const i32 depth_limit = (max_depth >= 0) ? max_depth : 20;
+    const i32 depth_limit = (max_depth >= 0) ? min(max_depth, kMaxDepth1D) : 20;
     return {Status::Ok, sign * adaptive_1d_c64(fn, a, b, abs_tol, 0, depth_limit)};
 }
 
@@ -266,7 +301,7 @@ Result<f64> integral2(Fn2 fn, f64 a, f64 b, f64 c, f64 d, f64 abs_tol, i32 max_d
         sign = -sign;
     }
     if (a == b || c == d) return {Status::Ok, 0.0};
-    const i32 depth_limit = (max_depth >= 0) ? max_depth : 18;
+    const i32 depth_limit = (max_depth >= 0) ? min(max_depth, kMaxDepth2D) : 18;
     return {Status::Ok, sign * adaptive_2d_f64(fn, a, b, c, d, abs_tol, 0, depth_limit)};
 }
 
@@ -289,9 +324,12 @@ Result<c64> integral2_batch_c64(BatchFn2C batch_fn, Fn2C scalar_fn, f64 a, f64 b
         sign = -sign;
     }
     if (a == b || c == d) return {Status::Ok, c64(0.0, 0.0)};
-    const i32 depth_limit = (max_depth >= 0) ? max_depth : 18;
+    const i32 depth_limit = (max_depth >= 0) ? min(max_depth, kMaxDepth2D) : 18;
     bool batch_ok = !batch_fn.empty();
-    return {Status::Ok, sign * adaptive_2d_c64(batch_fn, scalar_fn, a, b, c, d, abs_tol, 0, depth_limit, batch_ok)};
+    bool callback_failed = false;
+    const c64 val = adaptive_2d_c64(batch_fn, scalar_fn, a, b, c, d, abs_tol, 0, depth_limit, batch_ok, callback_failed);
+    if (callback_failed) return {Status::InvalidCallback, c64(0.0, 0.0)};
+    return {Status::Ok, sign * val};
 }
 
 Result<f64> integral3(Fn3 fn, f64 a, f64 b, f64 c, f64 d, f64 e, f64 f, f64 abs_tol, i32 max_depth_outer,
@@ -301,10 +339,13 @@ Result<f64> integral3(Fn3 fn, f64 a, f64 b, f64 c, f64 d, f64 e, f64 f, f64 abs_
         return {Status::InvalidBounds, 0.0};
     }
     if (!(abs_tol > 0.0) || !is_finite(abs_tol)) return {Status::InvalidTolerance, 0.0};
+    if (a == b || c == d || e == f) return {Status::Ok, 0.0};
 
+    const f64 span_x = max(1.0, abs(b - a));
+    const f64 inner_tol = max(1e-15, (0.25 * abs_tol) / span_x);
     auto outer_fn = [&](f64 x) -> f64 {
         auto inner_fn = [&](f64 y, f64 z) -> f64 { return fn(x, y, z); };
-        return integral2(inner_fn, c, d, e, f, abs_tol, max_depth_inner).value;
+        return integral2(inner_fn, c, d, e, f, inner_tol, max_depth_inner).value;
     };
     return integral(outer_fn, a, b, abs_tol, max_depth_outer);
 }
@@ -316,10 +357,13 @@ Result<c64> integral3_c64(Fn3C fn, f64 a, f64 b, f64 c, f64 d, f64 e, f64 f, f64
         return {Status::InvalidBounds, c64(0.0, 0.0)};
     }
     if (!(abs_tol > 0.0) || !is_finite(abs_tol)) return {Status::InvalidTolerance, c64(0.0, 0.0)};
+    if (a == b || c == d || e == f) return {Status::Ok, c64(0.0, 0.0)};
 
+    const f64 span_x = max(1.0, abs(b - a));
+    const f64 inner_tol = max(1e-15, (0.25 * abs_tol) / span_x);
     auto outer_fn = [&](f64 x) -> c64 {
         auto inner_fn = [&](f64 y, f64 z) -> c64 { return fn(x, y, z); };
-        return integral2_c64(inner_fn, c, d, e, f, abs_tol, max_depth_inner).value;
+        return integral2_c64(inner_fn, c, d, e, f, inner_tol, max_depth_inner).value;
     };
     return integral_c64(outer_fn, a, b, abs_tol, max_depth_outer);
 }
@@ -361,20 +405,30 @@ c64 trapz_c64(ArrayRef<c64> y, ArrayRef<f64> x) noexcept {
 void cumtrapz_strided(const f64* y, f64* dst, usize n, usize y_stride, usize dst_stride, const f64* x,
                       usize x_stride) noexcept {
     if (n == 0 || y == nullptr || dst == nullptr) return;
+    f64 prev_y = y[0];
+    f64 acc = 0.0;
     dst[0] = 0.0;
     for (usize i = 1; i < n; ++i) {
+        const f64 cur_y = y[i * y_stride];
         const f64 dx = (x != nullptr) ? (x[i * x_stride] - x[(i - 1) * x_stride]) : 1.0;
-        dst[i * dst_stride] = dst[(i - 1) * dst_stride] + 0.5 * (y[(i - 1) * y_stride] + y[i * y_stride]) * dx;
+        acc += 0.5 * (prev_y + cur_y) * dx;
+        dst[i * dst_stride] = acc;
+        prev_y = cur_y;
     }
 }
 
 void cumtrapz_strided_c64(const c64* y, c64* dst, usize n, usize y_stride, usize dst_stride, const f64* x,
                           usize x_stride) noexcept {
     if (n == 0 || y == nullptr || dst == nullptr) return;
+    c64 prev_y = y[0];
+    c64 acc(0.0, 0.0);
     dst[0] = c64(0.0, 0.0);
     for (usize i = 1; i < n; ++i) {
+        const c64 cur_y = y[i * y_stride];
         const f64 dx = (x != nullptr) ? (x[i * x_stride] - x[(i - 1) * x_stride]) : 1.0;
-        dst[i * dst_stride] = dst[(i - 1) * dst_stride] + 0.5 * (y[(i - 1) * y_stride] + y[i * y_stride]) * dx;
+        acc += 0.5 * (prev_y + cur_y) * dx;
+        dst[i * dst_stride] = acc;
+        prev_y = cur_y;
     }
 }
 
@@ -402,11 +456,16 @@ void gradient_strided(const f64* src, f64* dst, usize n, usize stride, f64 h) no
     }
     const f64 inv2h = 0.5 / h;
     const f64 inv_h = 1.0 / h;
-    dst[0] = (src[stride] - src[0]) * inv_h;
-    dst[(n - 1) * stride] = (src[(n - 1) * stride] - src[(n - 2) * stride]) * inv_h;
+    f64 prev = src[0];
+    f64 curr = src[stride];
+    dst[0] = (curr - prev) * inv_h;
     for (usize i = 1; i + 1 < n; ++i) {
-        dst[i * stride] = (src[(i + 1) * stride] - src[(i - 1) * stride]) * inv2h;
+        const f64 next = src[(i + 1) * stride];
+        dst[i * stride] = (next - prev) * inv2h;
+        prev = curr;
+        curr = next;
     }
+    dst[(n - 1) * stride] = (curr - prev) * inv_h;
 }
 
 void gradient_1d(ArrayRef<f64> src, MutArrayRef<f64> dst, f64 h) noexcept {
@@ -416,13 +475,20 @@ void gradient_1d(ArrayRef<f64> src, MutArrayRef<f64> dst, f64 h) noexcept {
 
 void del2_strided(const f64* src, f64* dst, usize n, usize stride, f64 h) noexcept {
     if (n == 0 || src == nullptr || dst == nullptr) return;
-    for (usize i = 0; i < n; ++i) {
-        dst[i * stride] = 0.0;
+    if (n < 3) {
+        for (usize i = 0; i < n; ++i) {
+            dst[i * stride] = 0.0;
+        }
+        return;
     }
-    if (n < 3) return;
     const f64 inv = 1.0 / (2.0 * h * h);
+    f64 prev = src[0];
+    f64 curr = src[stride];
     for (usize i = 1; i + 1 < n; ++i) {
-        dst[i * stride] = (src[(i + 1) * stride] - 2.0 * src[i * stride] + src[(i - 1) * stride]) * inv;
+        const f64 next = src[(i + 1) * stride];
+        dst[i * stride] = (next - 2.0 * curr + prev) * inv;
+        prev = curr;
+        curr = next;
     }
     if (n == 3) {
         dst[0] = dst[1 * stride];
